@@ -2,7 +2,7 @@
 
 ## Instructors: [Lesa Hoffman](https://lesahoffman.com) and [Jonathan Templin](https://jonathantemplin.com)
 
-This repository contains the materials for the Multilevel Measurement Models Workshop 2023, given 27-30 June 2023 at the Universität Mannheim as part of the Statistical Modeling in Psychology training group. Details about the event can be found at [https://www.uni-mannheim.de/smip-summerschool/](https://www.uni-mannheim.de/smip-summerschool/).
+This repository contains the materials for the Multilevel Measurement Models Workshop 2023, given 27-30 June 2023 at the Universität Mannheim. This workshop was held in the Research Training Group "Statistical Modeling in Psychology", funded by the German Research Foundation (DFG). Details about the event can be found at [https://www.uni-mannheim.de/smip-summerschool/](https://www.uni-mannheim.de/smip-summerschool/). 
 
 Workshop videos are available via YouTube at [https://www.youtube.com/playlist?list=PLSmMs4UgmSMgay00hLnxQNsZHNXN8_ZIt](https://www.youtube.com/playlist?list=PLSmMs4UgmSMgay00hLnxQNsZHNXN8_ZIt).
 
