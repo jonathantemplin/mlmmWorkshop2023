@@ -1,0 +1,391 @@
+---
+title: "02mlm_ML_Lesa"
+author: "Lesa Hoffman and Jonathan Templin"
+date: "2023-06-06"
+format: 
+  docx: 
+    reference-doc: custom-reference-doc.docx
+editor: source
+header-includes:
+- \usepackage{amsthm}
+- \newtheorem{proposition}{Proposition}
+---
+
+```{r setup, include=TRUE}
+knitr::opts_chunk$set(echo=TRUE)
+
+# Manually set working directory for all chunks below
+# knitr::opts_knit$set(root.dir="C:/Dropbox/mlmmWorkshop2023")
+```
+
+# Multilevel Modeling: Predicting Observed Sum Score for Students Nested in Schools
+
+This example will illustrate the concepts and estimation of multilevel models for observed outcomes. We will predict the sum score of the 10 example items using binary free/reduced lunch status for level-1 students nested in level-2 schools (as clusters). We will use standard ML estimation within the nlme, lme4, and lavaan packages. We will then conduct the same analyses using Bayesian estimation within Stan (in separate files).
+
+## Preliminary Steps
+
+First (below), we set global options to my preferred versions, and then install and load the R packages to be used. We also load custom functions that perform convenient computations (written by Jonathan Templin).
+
+```{r install, include=TRUE}
+# Set width of output and number of significant digits printed,
+# number of digits before using scientific notation, shut off significance stars
+options(width=120, digits=8, scipen=9, show.signif.stars=FALSE)
+
+#####  Check to see if packages are downloaded, install if not, then load  #####
+
+# To get compact data description
+if (!require("psych")) install.packages("psych"); library(psych) 
+
+# To estimate MLMs using gls or lme
+if (!require("nlme")) install.packages("nlme"); library(nlme) 
+
+# To estimate MLMs using lmer
+if (!require("lme4")) install.packages("lme4"); library(lme4) 
+
+# To get Satterthwaite DDF in lmer
+if (!require("lmerTest")) install.packages("lmerTest"); library(lmerTest) 
+
+# To get ICC in lmer
+if (!require("performance")) install.packages("performance"); library(performance)
+
+# To estimate multivariate MLM using multilevel SEM
+if (!require("lavaan")) install.packages("lavaan"); library(lavaan)
+ 
+# Clear workspace (re-run as needed for troubleshooting purposes)
+#rm(list = ls())
+
+# Load R functions for this example from folder within working directory
+functions = paste0("../functions/", dir("../functions/"))
+temp = lapply(X = functions, FUN = source)
+
+```
+
+## Data Import, Manipulation, and Description
+
+Next (below), we import the R data file for this example. We also use one of our custom functions to create two new school-level means: one for the sum score student outcome, and one for the binary free/reduced lunch student predictor.
+
+```{r data, include=TRUE}
+
+# Load example data
+load("../data/modelingData.RData")
+
+# Create school means for sum score student outcome and free/reduced lunch student predictor 
+modelingData = addUnitMeans(data=modelingData, unitVariable="schoolID", 
+                            meanVariables=c("sumScore","frlunch"), 
+                            newNames=c("SMsumScore","SMfrlunch"))
+
+# Descriptive statistics for student variables and new school means
+print(describe(modelingData[c("sumScore","frlunch","SMsumScore","SMfrlunch")]), digits=2)
+
+```
+
+As shown by the "SM" variables above, the range across schools in the sum scores is 3.08 to 7.58 on a 0 to 10 scale, and the range across schools in the proportion of students receiving free/reduced lunch is 0 to .80 -- quite a bit of school-level variability in both variables! In preparation for using school mean free/reduced lunch as a predictor (stay tuned!), we center it near the sample mean. We also create a purely within-school version of student free/reduced lunch using cluster-mean-centering.
+
+```{r centering, include=TRUE}
+
+# Constant-center school lunch near sample mean to use as observed level-2 predictor
+modelingData$SMfrlunch30 = modelingData$SMfrlunch - .30
+
+# Cluster-mean-center student lunch at school mean to use as observed level-1 predictor
+modelingData$WSfrlunch = modelingData$frlunch - modelingData$SMfrlunch
+
+```
+
+## Models for Partitioning Student-Level from School-Level Variance
+
+Next, we will estimate and compare two "empty means" (i.e., no-predictor) models for each variable. The first is a single-level model with only a residual variance, and the second is a two-level model that adds a random intercept variance.
+
+### Partitioning Variance in the Sum Score Outcome using General Models
+
+In the empty means, single-level model below, $\beta_{0c}$ is a placeholder for the cluster-level intercept for each school, which gets defined (so far) by only a fixed intercept, $\gamma_{00}$.
+
+$$ \begin{array}{rcl}
+sumScore_{pc} & = & \beta_{0c} + e_{pc} \\
+\beta_{0c} & = & \gamma_{00}             \\
+\end{array}
+$$
+
+
+```{r partitionSumScore1, include=TRUE}
+
+# Single-level empty model predicting observed sum score ignoring school
+# Using gls instead of lm to get model log-likelihood for model comparison
+modelEmptyGLM = gls(data=modelingData, method="ML", model=sumScore~1)
+summary(modelEmptyGLM)
+
+```
+
+As shown above, the single-level empty model perfectly reproduces the original mean of the sum score outcome as the fixed intercept. The ML estimate of the outcome SD (with total variance = 6.629) is very close to that of the original data as expected.
+
+In the empty means, two-level model below, we add a random intercept for each school, $U_{0c}$, whose variance across schools is then estimated to form its random intercept variance.
+
+$$ \begin{array}{rcl}
+sumScore_{pc} & = & \beta_{0c} + e_{pc} \\
+\beta_{0c} & = & \gamma_{00} + U_{0c}   \\
+\end{array}
+$$
+
+```{r partitionSumScore2, include=TRUE}
+
+# Two-level empty model predicting observed sum score with students nested in schools
+modelEmptyRI = lmer(data=modelingData, REML=FALSE, sumScore~1+(1|schoolID))
+summary(modelEmptyRI)
+
+```
+
+As shown above, the two-level empty model returns a fixed intercept $\gamma_{00}$ that is nearly identical to the mean of the original sum score outcome, but it now represents the sample mean of the school means (and is thus a weighted mean). The sum of the two estimated variances is close to the model-estimated variance from the single-level model.
+
+```{r partitionSumScore3, include=TRUE}
+
+# Show intraclass correlation and its likelihood ratio test
+icc(modelEmptyRI); ranova(modelEmptyRI)
+
+```
+
+As shown above, the two-level empty model partitions the sum score's observed variance into between-school mean differences (16.1% as given by the intraclass correlation, ICC = .161) and within-school student deviations from their school mean (the remaining 83.9%). The sum score ICC was computed (using `icc` from the `performance` package) as follows:
+
+$$ ICC = \frac {1.0700}{1.0700+5.5762} = .161 $$
+
+The `ranova` command then conducts a likelihood ratio test comparing the log-likelihood from the empty models with vs without a random intercept variance. As expected, the ICC = .161 is significantly \> 0.
+
+### Partitioning Variance in the Binary Free/Reduced Lunch Predictor using Generalized Models
+
+Now let's do the same thing for the binary free/reduced student lunch variable, but we will predict it using a logit link function and a Bernoulli conditional distribution instead. First, a single-level model (equivalent to a logistic regression):
+
+$$ \begin{array}{rcl}
+Logit(frlunch_{pc}=1) & = & \beta_{0c} \\
+\beta_{0c} & = & \gamma_{00}   \\
+\end{array}
+$$
+
+```{r partitionFRlunch1, include=TRUE}
+
+# Single-level empty model predicting observed free/reduced lunch ignoring school
+modelEmptyGLMfr = glm(data=modelingData, family=binomial(link="logit"), formula=frlunch~1)
+summary(modelEmptyGLMfr) # Null deviance= -2LL already
+
+# Convert logit intercept into probability
+modelEmptyGLMfrProb=1/(1+exp(-1*coefficients(modelEmptyGLMfr))); modelEmptyGLMfrProb 
+
+```
+
+As shown above, the single-level model perfectly reproduces the mean of the original binary outcome <b>after</b> converting the logit intercept into probability (via the inverse logit link function):
+
+$$ prob(y=1) = \frac {\exp(logit)}{1+\exp(logit)} = \frac{\exp(-0.858074)}{1+\exp(-0.858074)} = 0.298 $$
+
+Next, in a two-level model, we add a random intercept for each school, $U_{0c}$, whose variance across schools is then estimated to form its random intercept variance.
+
+$$ \begin{array}{rcl}
+Logit(frlunch_{pc}=1) & = & \beta_{0c} \\
+\beta_{0c} & = & \gamma_{00} + U_{0c}   \\
+\end{array}
+$$
+
+```{r partitionFRlunch2, include=TRUE}
+
+# Two-level empty model predicting observed free/reduced lunch with students nested in schools
+modelEmptyRIfr = glmer(data=modelingData, family=binomial(link="logit"), frlunch~1+(1|schoolID))
+summary(modelEmptyRIfr) # deviance = -2LL already
+
+# Convert logit intercept into probability (sub-object beta holds fixed intercept)
+modelEmptyRIfrProb=1/(1+exp(-1*(modelEmptyRIfr@beta))); modelEmptyRIfrProb 
+
+# Compute ICC using pi^2/3 = 3.29 as residual variance (sub-object theta holds random intercept variance)
+modelEmptyRIfr@theta^2/(modelEmptyRIfr@theta^2+(pi^2/3)) 
+
+# Likelihood Ratio Test for Addition of Random Intercept Variance
+DevTest=-2*(logLik(modelEmptyGLMfr)-logLik(modelEmptyRIfr))
+Pvalue=pchisq((DevTest), df=1, lower.tail=FALSE)
+# Test Statistic and P-values for DF=1 
+DevTest; Pvalue
+
+```
+
+As shown above, we note the logit fixed intercept has changed: from -0.858074 to -1.18370 (corresponding to prob = .300 vs. prob = .234). This is because the fixed intercept takes on a different "unit-specific" interpretation -- it is now specifically the logit of receiving free/reduced lunch <i>for a student in a school with random intercept = 0</i>.
+
+The two-level model partitions its variance into between-school mean differences (36.6.1% as given by the intraclass correlation, ICC = .366) and within-school student deviations from their school mean (the remaining 63.4%). The ICC for binary free/reduced lunch was computed as follows:
+
+$$\ ICC = \frac{1.8966}{1.8966+3.29} = 0.366 $$ Because 36.6% of the variance in student free/reduced lunch reflects school mean differences, this means it can potentially predict both student-level variance and school-level variance in the sum score outcome.
+
+## Models Predicting the Observed Sum Score from Free/Reduced Lunch for Students Nested in Schools
+
+### Smushed Level-1 Slope for Free/Reduced Lunch
+
+Next, we add a level-1 predictor for student free/reduced lunch:
+$$ \begin{array}{rcl}
+sumScore_{pc} & = & \beta_{0c} + \beta_{1c}(frlunch_{pc}) + e_{pc} \\
+\beta_{0c} & = & \gamma_{00} + U_{0c}   \\
+\beta_{1c} & = & \gamma_{10}   \\
+\end{array}
+$$
+
+```{r smushed, include=TRUE}
+
+# Add smushed level-1 slope for frlunch
+modelSmushed = lmer(data=modelingData, REML=FALSE, sumScore~1+frlunch+(1|schoolID))
+summary(modelSmushed, ddf="Satterthwaite")
+
+# Proportion explained of each variance component relative to empty model
+pseudoRSquaredinator(smallerModel=modelEmptyRI, largerModel=modelSmushed)
+
+```
+
+As shown above, the slope for the new level-1 predictor $\gamma_{10}$ is significantly negative, indicating a deficit for students who receive free/reduced lunch relative to those who don't. However, the proportion of variance explained at each level gives us a clue that the model is mis-specified: The only way that a level-1 student predictor can explain level-2 school variance is through the implied level-2 predictor inside the level-1 predictor. The fact that there is only one slope for both implied parts of the predictor indicates the slope is "smushed" -- it is a conflated effect that assumes the level-1 within-school and level-2 between-school slopes are of equal magnitude.
+
+### Add Centered School Mean to Unsmush the Level-1 Slope for Free/Reduced Lunch
+
+To fix it, we add a separate level-2 predictor for the centered school mean of free/reduced lunch:
+
+$$ \begin{array}{rcl}
+ssumScore_{pc} & = & \beta_{0c} + \beta_{1c}(frlunch_{pc}) + e_{pc} \\
+\beta_{0c} & = & \gamma_{00} + \gamma_{01}(SMfrlunch_c - .30) + U_{0c}   \\
+\beta_{1c} & = & \gamma_{10}   \\
+\end{array}
+$$
+
+```{r contextual, include=TRUE}
+
+# Add centered school mean to unsmush the level-1 slope for frlunch
+modelLunch = lmer(data=modelingData, REML=FALSE, sumScore~1+frlunch+SMfrlunch30+(1|schoolID))
+summary(modelLunch, ddf="Satterthwaite")
+
+# Compute full between level-2 effect
+contest1D(modelLunch, L=c(0,1,1))
+
+# Proportion explained of each variance component relative to smushed model
+pseudoRSquaredinator(smallerModel=modelSmushed, largerModel=modelLunch)
+
+# Proportion explained of each variance component relative to empty model
+pseudoRSquaredinator(smallerModel=modelEmptyRI, largerModel=modelLunch)
+
+# Total R2 relative to empty model
+totalRSquaredinator(model=modelLunch, dvName="sumScore", data=modelingData)
+
+```
+
+As shown above, the slope for the new level-2 predictor $\gamma_{01}$ is significantly negative. It represents the <b>contextual effect</b> of free/reduced lunch: the incremental contribution of the school mean predictor <i>after controlling for the student-level effect</i>.
+
+More specifically, the level-1 slope for `frlunch` $\gamma_{10}$ (which is now slightly less negative after getting un-smushed by the contextual level-2 effect) now refers to the lunch-related difference between students who attend the same school. In contrast to the previous model, it is now purely a <b>within-school</b> effect that explained 3.08% of the level-1 residual variance representing within-school differences.
+
+The <b>level-2 contextual slope</b> for `SMfrlunch30` $\gamma_{01}$ indicates the <i>incremental</i> effect of the proportion of students who receive free/reduced lunch on school mean sum scores. Given that the level-2 predictor is a proportion ranging from 0 to 1, the slope for its "one unit" change refers to the entire span of the variable (i.e., from 0 to 100% of students). So to make the slope more meaningful, we can divide it by 10: For every 10% more students receiving free/reduced lunch, school mean sum scores are lower by .313.
+
+To get the full model-implied level-2 between effect, we can use `contest1D` to ask for the sum of the level-1 within-school and level-2 contextual slopes = $\gamma_{10}$ + $\gamma_{01}$ = -1.042 + -3.125 = -4.167. It explained 82.0% of the level-2 random intercept variance representing school mean differences.
+
+In total, the model fixed effects explained 15.8% of the total variance in the observed sum scores.
+
+### Switching to Cluster-Mean-Centered version of Level-1 Slope for Free/Reduced Lunch
+
+To obtain the level-2 between effect directly as a model parameter, we can instead use the cluster-mean-centered version of the level-1 student free/reduced lunch predictor (keeping the constant-centered school mean lunch level-2 predictor):
+
+$$ \begin{array}{rcl}
+sumScore_{pc} & = & \beta_{0c} + \beta_{1c}(frlunch_{pc} - SMfrlunch_{c}) + e_{pc} \\
+\beta_{0c} & = & \gamma_{00} + \gamma_{01}(SMfrlunch_c - .30) + U_{0c}   \\
+\beta_{1c} & = & \gamma_{10}   \\
+\end{array}
+$$
+
+```{r within-between, include=TRUE}
+
+# Cluster-mean-centered version of modelLunch
+modelLunchCMC = lmer(data=modelingData, REML=FALSE, sumScore~1+WSfrlunch+SMfrlunch30+(1|schoolID))
+summary(modelLunchCMC, ddf="Satterthwaite")
+
+# Compute contextual level-2 effect
+contest1D(modelLunchCMC, L=c(0,-1,1))
+
+# Total R2 relative to empty model
+totalRSquaredinator(model=modelLunchCMC, dvName="sumScore", data=modelingData)
+
+```
+
+As shown above, the slope for the level-2 predictor $\gamma_{01}$ is now the significantly negative level-2 between effect (found as a linear combination previously). It represents the <b>between-school effect</b> of free/reduced lunch: the total contribution of the school mean predictor <i>without controlling for the student-level effect</i>. The contextual level-2 effect can then be found as a linear combination of (between minus within). The within-school slope given by $\gamma_{10}$ is exactly the same, despite the fact that it is multiplying the cluster-mean-centered version of the level-2 predictor.
+
+### Multivariate MLM using Latent Centering, Pretending frlunch is Continuous
+
+For our next model, we predict both student free/reduced lunch and student sum scores in a multivariate model. However, because `lavaan` cannot do multilevel models for categorical outcomes, we must pretend that `frlunch` is continuous.
+
+$$
+\begin{array}{rcl}
+Logit(frlunch_{pc}=1) & = & \beta_{0c}^{lunch} \\
+\beta_{0c}^{lunch} & = & \gamma_{00}^{lunch} + U_{0c}^{lunch}   \\
+& & \\
+sumScore_{pc} & = & \beta_{0c} + \beta_{1c}(frlunch_{pc}) + e_{pc} \\
+\beta_{0c} & = & \gamma_{00} + \gamma_{01}(\beta_{0c}^{lunch}) + U_{0c}   \\
+\beta_{1c} & = & \gamma_{10}   \\
+\end{array}
+$$
+
+```{r multiv, include=TRUE}
+
+# Multivariate MLM using Latent Centering, Still Pretending frlunch is Continuous
+MultivSyntax = "
+level: 1
+  # Level-1 residual variance for SumScore only
+    sumScore ~~ sumScore
+  # frlunch predicts sumScore: level-1 within-school slope
+    sumScore ~ (within)*frlunch
+level: 2
+  # Fixed intercepts
+    sumScore ~ 1; frlunch ~ 1
+  # Level-2 random intercept variances
+    sumScore ~~ sumScore
+    frlunch ~~ frlunch
+  # frlunch predicts sumScore: level-2 between slope
+    sumScore ~ (between)*frlunch
+  # Compute contextual level-2 effect
+    context := between - within
+"
+modelMultiv = lavaan(model=MultivSyntax, data=modelingData, cluster="schoolID", 
+                     mimic="mplus", std.lv=FALSE, estimator="ML") 
+summary(object=modelMultiv)
+
+```
+
+The results for the multivariate MLM are the same as for the univariate MLM with respect to level 1, but they differ at level 2 due to the use of latent centering. Rather than compute the observed school mean to use as the level-2 predictor (after centering it at .30), the multivariate model uses latent centering: It estimates a random intercept variance for free/reduced lunch to use as a level-2 predictor instead. Limitations of `lavaan's` multilevel modeling require us to pretend `frlunch` is continuous rather than model it properly as binary, however.
+
+Consequently, the `sumScore` fixed intercept is now specifically for a student who does not receive free/reduced lunch in a school where no students receive free/reduced lunch (rather than in a school where 30% receive free/reduced lunch, as before). The level-2 between slope is a little stronger (-4.384 vs. -4.167) in the latent-centered multivariate model, as has often been found for these models in comparing the recovery of level-2 effects using observed vs. latent level-2 mean variables.
+
+## Models with a Random Slope across Schools for Cluster-Mean-Centered Student Free/Reduced Lunch
+
+Using the cluster-mean-centered version of the level-1 student free/reduced lunch predictor, we allow its slope to vary randomly across schools in the model below:
+
+$$ \begin{array}{rcl}
+sumScore_{pc} & = &\beta_{0c} + \beta_{1c}(frlunch_{pc} - SMfrlunch_{c}) + e_{pc} \\
+\beta_{0c} & = & \gamma_{00} + \gamma_{01}(SMfrlunch_c - .30) + U_{0c}   \\
+\beta_{1c} & = & \gamma_{10} + U_{1c}  \\
+\end{array}
+$$
+
+```{r random-slope, include=TRUE}
+
+# Add random level-1 slope for CMC frlunch
+modelRandSlope = lmer(data=modelingData, REML=FALSE, 
+                      sumScore~1+WSfrlunch+SMfrlunch30+(1+WSfrlunch|schoolID))
+summary(modelRandSlope, ddf="Satterthwaite")
+# Likelihood ratio test for significance of random slope variance
+ranova(modelRandSlope)
+
+```
+
+As shown above, there is a new variance of the random slopes across schools (and the correlation of the random intercept and random slope across schools). The likelihood ratio test indicates the new slope variance is not significant, however, indicating that schools do not vary in the size of their within-school difference due to free/reduced lunch status.
+
+For demonstration purposes, below we estimate a model adding a cross-level interaction between the two predictors, whose purpose is to predict why some schools have greater lunch-related deficits:
+
+$$
+\begin{array}{rcl}
+sumScore_{pc} & = & \beta_{0c} + \beta_{1c}(frlunch_{pc} - SMfrlunch_{c}) + e_{pc} \\
+\beta_{0c} & = & \gamma_{00} + \gamma_{01}(SMfrlunch_c - .30) + U_{0c}   \\
+\beta_{1c} & = &  \gamma_{10} + \gamma_{11}(SMfrlunch_c - .30) + U_{1c}  \\
+\end{array}
+$$
+
+```{r cross-level, include=TRUE}
+
+# Add cross-level interaction predicting random level-1 slope for CMC frlunch (demo purposes only)
+modelCrossLevel = lmer(data=modelingData, REML=FALSE, 
+                       sumScore~1+WSfrlunch+SMfrlunch30+WSfrlunch:SMfrlunch30+(1+WSfrlunch|schoolID))
+summary(modelCrossLevel, ddf="Satterthwaite")
+
+```
+
+As shown above, the cross-level interaction between the lunch predictors indicates that the within-school lunch slope is nonsignificantly less negative (smaller) in schools with a greater proportion of students who receive free/reduced lunch.
